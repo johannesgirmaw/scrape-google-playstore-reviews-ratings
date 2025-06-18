@@ -1,3 +1,4 @@
+
 import pandas as pd
 from google_play_scraper import Sort, reviews
 from datetime import datetime
@@ -8,33 +9,38 @@ import time
 class GooglePlayReviewScraper:
     """
     A class to scrape user reviews from the Google Play Store for specified banking apps,
-    preprocess the collected data, and save it to a CSV file.
+    preprocess the collected data, and save them to separate CSV files (one per bank).
     """
 
-    def __init__(self, output_dir="data", target_reviews_per_bank=400):
+    def __init__(self, raw_output_dir="data/raw", cleaned_output_dir="data/cleaned", target_reviews_per_bank=400):
         """
         Initializes the scraper with app configurations and output settings.
 
         Args:
-            output_dir (str): Directory to save the output CSV file.
+            raw_output_dir (str): Directory to save the raw output CSV files.
+            cleaned_output_dir (str): Directory to save the cleaned output CSV files.
             target_reviews_per_bank (int): Minimum number of reviews to scrape per bank.
         """
-        self.output_dir = output_dir
+        self.raw_output_dir = raw_output_dir
+        self.cleaned_output_dir = cleaned_output_dir
         self.target_reviews_per_bank = target_reviews_per_bank
         self.app_configs = {
             # Verified app ID (common)
-            "Commercial Bank of Ethiopia Mobile": "com.cbe.mobilebanking",
+            "Commercial Bank of Ethiopia Mobile": "com.combanketh.mobilebanking",
             # Verified app ID (common)
-            "Bank of Abyssinia Mobile": "com.boa.mobilebanking",
+            "Bank of Abyssinia Mobile": "com.boa.boaMobileBanking",
             # Verified app ID (common)
-            "Dashen Bank Mobile": "com.dashen.mobile"
+            "Dashen Bank Mobile": "com.dashen.dashensuperapp"
         }
-        self.all_scraped_reviews = []
 
-        # Create output directory if it doesn't exist
-        if not os.path.exists(self.output_dir):
-            os.makedirs(self.output_dir)
-            print(f"Created output directory: {self.output_dir}")
+        # Create output directories if they don't exist
+        if not os.path.exists(self.raw_output_dir):
+            os.makedirs(self.raw_output_dir)
+            print(f"Created raw output directory: {self.raw_output_dir}")
+        if not os.path.exists(self.cleaned_output_dir):
+            os.makedirs(self.cleaned_output_dir)
+            print(
+                f"Created cleaned output directory: {self.cleaned_output_dir}")
 
     def _scrape_single_app(self, app_id, app_name, count):
         """
@@ -67,6 +73,13 @@ class GooglePlayReviewScraper:
                     count=min(200, count - fetched_count),
                     continuation_token=continuation_token
                 )
+
+                # Check if result is None or empty before extending
+                if result is None:
+                    print(
+                        f"No reviews returned for {app_name} in this batch. Breaking loop.")
+                    break
+
                 scraped_data.extend(result)
                 fetched_count += len(result)
                 continuation_token = token
@@ -75,6 +88,7 @@ class GooglePlayReviewScraper:
                     f"Fetched {len(result)} new reviews. Total for {app_name}: {fetched_count}")
 
                 # If no more reviews or target reached, break loop
+                # Also break if no reviews were fetched in the last call but a token exists
                 if not token or len(result) == 0:
                     print(
                         f"Reached end of available reviews or target met for {app_name}.")
@@ -101,17 +115,6 @@ class GooglePlayReviewScraper:
             f"Finished scraping {app_name}. Collected {len(processed_reviews)} reviews.")
         return processed_reviews
 
-    def scrape_all_apps(self):
-        """
-        Orchestrates scraping reviews for all configured banking applications.
-        """
-        for app_name, app_id in self.app_configs.items():
-            app_reviews = self._scrape_single_app(
-                app_id, app_name, self.target_reviews_per_bank)
-            self.all_scraped_reviews.extend(app_reviews)
-        print(
-            f"\n--- Total reviews collected across all banks: {len(self.all_scraped_reviews)} ---")
-
     def preprocess_reviews(self, df):
         """
         Preprocesses the raw DataFrame of scraped reviews.
@@ -126,6 +129,7 @@ class GooglePlayReviewScraper:
 
         # 1. Remove duplicates based on 'review' and 'date'
         initial_rows = len(df)
+        # Ensure 'bank' is also part of the duplicate check for uniqueness across banks
         df.drop_duplicates(subset=['review', 'date', 'bank'], inplace=True)
         print(
             f"Removed {initial_rows - len(df)} duplicate rows. Remaining: {len(df)}")
@@ -157,48 +161,86 @@ class GooglePlayReviewScraper:
         print(f"Final dataset size after preprocessing: {len(df)} rows")
         return df
 
-    def run(self, filename="mobile_banking_reviews.csv"):
+    def run(self):
         """
-        Executes the full scraping and preprocessing pipeline.
-
-        Args:
-            filename (str): Name of the CSV file to save the processed data.
+        Executes the full scraping and preprocessing pipeline, saving reviews
+        for each bank to separate raw and cleaned CSV files.
         """
-        self.scrape_all_apps()
+        print("\n--- Starting scraping and processing for all apps ---")
+        for app_name, app_id in self.app_configs.items():
+            # Scrape reviews for the current app
+            app_reviews_list = self._scrape_single_app(
+                app_id, app_name, self.target_reviews_per_bank)
 
-        if not self.all_scraped_reviews:
-            print("No reviews were scraped. Exiting.")
-            return
+            if not app_reviews_list:
+                print(
+                    f"No reviews collected for {app_name}. Skipping CSV creation.")
+                continue
 
-        raw_df = pd.DataFrame(self.all_scraped_reviews)
-        print(f"\nRaw DataFrame created with {len(raw_df)} entries.")
-
-        processed_df = self.preprocess_reviews(raw_df)
-
-        # Save the processed data to CSV
-        output_filepath = os.path.join(self.output_dir, filename)
-        try:
-            processed_df.to_csv(output_filepath, index=False, encoding='utf-8')
+            # Create a DataFrame for the current app's reviews (raw)
+            raw_df = pd.DataFrame(app_reviews_list)
             print(
-                f"\nSuccessfully saved processed reviews to: {output_filepath}")
-            print(f"Total reviews saved: {len(processed_df)}")
-        except Exception as e:
-            print(f"Error saving data to CSV: {e}")
+                f"\nRaw DataFrame created for {app_name} with {len(raw_df)} entries.")
 
-        # Basic data quality check as requested by KPIs
-        missing_data_percentage = processed_df.isnull().sum().sum() / \
-            processed_df.size * 100
-        print(
-            f"Missing data percentage in final dataset: {missing_data_percentage:.2f}%")
-        if missing_data_percentage < 5:
-            print("Missing data percentage is within the acceptable range (<5%).")
-        else:
-            print("WARNING: Missing data percentage is higher than recommended.")
+            # Sanitize app name for filename (replace spaces and special chars)
+            filename_safe_app_name = app_name.replace(
+                " ", "_").replace("/", "_").replace("\\", "_")
+
+            # --- Save Raw Data ---
+            raw_output_filename = f"{filename_safe_app_name}_mobile_banking_reviews_raw.csv"
+            raw_output_filepath = os.path.join(
+                self.raw_output_dir, raw_output_filename)
+            try:
+                raw_df.to_csv(raw_output_filepath,
+                              index=False, encoding='utf-8')
+                print(
+                    f"Successfully saved raw reviews for {app_name} to: {raw_output_filepath}")
+            except Exception as e:
+                print(f"Error saving raw data for {app_name} to CSV: {e}")
+
+            # Preprocess the current app's reviews
+            # Use a copy to avoid modifying raw_df in place
+            processed_df = self.preprocess_reviews(raw_df.copy())
+
+            # --- Save Cleaned Data ---
+            cleaned_output_filename = f"{filename_safe_app_name}_mobile_banking_reviews_cleaned.csv"
+            cleaned_output_filepath = os.path.join(
+                self.cleaned_output_dir, cleaned_output_filename)
+
+            try:
+                processed_df.to_csv(
+                    cleaned_output_filepath, index=False, encoding='utf-8')
+                print(
+                    f"\nSuccessfully saved processed reviews for {app_name} to: {cleaned_output_filepath}")
+                print(
+                    f"Total reviews saved for {app_name}: {len(processed_df)}")
+
+                # Basic data quality check as requested by KPIs
+                missing_data_percentage = processed_df.isnull().sum().sum() / \
+                    processed_df.size * 100
+                print(
+                    f"Missing data percentage in final dataset for {app_name}: {missing_data_percentage:.2f}%")
+                if missing_data_percentage < 5:
+                    print(
+                        "Missing data percentage is within the acceptable range (<5%).")
+                else:
+                    print(
+                        "WARNING: Missing data percentage is higher than recommended.")
+
+            except Exception as e:
+                print(f"Error saving cleaned data for {app_name} to CSV: {e}")
+
+        print("\n--- All app scraping and processing complete ---")
 
 
 if __name__ == "__main__":
     # Example usage:
-    # Initialize the scraper to target 400 reviews per bank
-    scraper = GooglePlayReviewScraper(target_reviews_per_bank=400)
+    # Initialize the scraper to target 400 reviews per bank,
+    # and specify raw and cleaned output directories
+    scraper = GooglePlayReviewScraper(
+        raw_output_dir="data/raw",
+        cleaned_output_dir="data/cleaned",
+        target_reviews_per_bank=400
+    )
     # Run the scraping and preprocessing pipeline
     scraper.run()
